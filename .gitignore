@@ -1,0 +1,22 @@
+# Virtual env
+venv/
+.venv/
+
+# PyCharm
+.idea/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Env files
+.env
+
+# Logs
+*.log
+
+# SQLite
+*.sqlite3
+
+# macOS
+.DS_Store
