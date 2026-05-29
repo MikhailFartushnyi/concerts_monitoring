@@ -1,25 +1,20 @@
-
 """
-Скрапер biglion.ru — POST API.
-Получаем:
-- акции
-- venue
-- address
-- нормальные дату и время через graphql
+Скрапер biglion.ru — POST API + GraphQL для дат.
+
+Прогресс: один tqdm с known total (из первого ответа API).
 """
 
 import hashlib
 import re
 import time
-from datetime import date, datetime
-from zoneinfo import ZoneInfo
+from datetime import date as date_cls
+from datetime import datetime
+
 import requests
 from tqdm import tqdm
 
 API_URL = "https://www.biglion.ru/gateway/dealOfferService/api/v1/deal-offer"
-
 GRAPHQL_URL = "https://ticket-service.biglion.ru/graphql"
-
 LIMIT = 60
 
 HEADERS = {
@@ -44,31 +39,22 @@ HEADERS = {
     "sec-ch-ua-platform": '"Windows"',
 }
 
+HEADERS_HTML = {**HEADERS,
+                "Accept": "text/html,*/*",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Site": "none"}
+
 BASE_BODY = {
-    "filters": [
-        {
-            "base": [
-                {
-                    "field": "categorySlug",
-                    "operator": "in",
-                    "value": "/services/other/kontserty-klassicheskoy-muzyki/"
-                },
-                {
-                    "field": "citySlug",
-                    "operator": "=",
-                    "value": "moscow"
-                },
-                {
-                    "operator": "and"
-                },
-                {
-                    "field": "holdDay",
-                    "operator": "=",
-                    "value": "0"
-                },
-            ]
-        }
-    ],
+    "filters": [{
+        "base": [
+            {"field": "categorySlug", "operator": "in",
+             "value": "/services/other/kontserty-klassicheskoy-muzyki/"},
+            {"field": "citySlug", "operator": "=", "value": "moscow"},
+            {"operator": "and"},
+            {"field": "holdDay", "operator": "=", "value": "0"},
+        ]
+    }],
     "sort": "startDate desc",
     "limit": LIMIT,
     "category": {
@@ -82,268 +68,137 @@ BASE_BODY = {
 
 
 def run() -> list[dict]:
-
     session = requests.Session()
     session.headers.update(HEADERS)
 
-    all_items = []
-
+    # ── Шаг 1: собираем все deals, узнаём total из первого ответа ─────────────
+    raw_deals = []
     offset = 0
+    total = None
 
-    with tqdm(desc="  biglion", unit=" концерт", leave=True) as pbar:
+    while True:
+        body = {**BASE_BODY, "offset": offset}
+        try:
+            r = session.post(API_URL, json=body, timeout=15)
+            r.raise_for_status()
+            data = r.json()
+        except Exception as e:
+            tqdm.write(f"  [biglion] ошибка offset={offset}: {e}")
+            break
 
-        while True:
+        # total только из первого ответа
+        if total is None:
+            total = (data.get("data", {})
+                     .get("data", {})
+                     .get("totalCount") or 0)
 
-            body = {
-                **BASE_BODY,
-                "offset": offset
-            }
+        deals = (data.get("data", {})
+                 .get("data", {})
+                 .get("deals", []))
+        if not deals:
+            break
 
-            try:
-                r = session.post(
-                    API_URL,
-                    json=body,
-                    timeout=15
-                )
+        raw_deals.extend(deals)
 
-                r.raise_for_status()
+        if len(deals) < LIMIT:
+            break
 
-                data = r.json()
+        offset += LIMIT
+        time.sleep(0.5)
 
-            except Exception as e:
-                tqdm.write(f"  [biglion] ошибка offset={offset}: {e}")
-                break
-
-            deals = (
-                data.get("data", {})
-                .get("data", {})
-                .get("deals", [])
-            )
-
-            if not deals:
-                break
-
-            batch = _parse(session, deals)
-
-            all_items.extend(batch)
-
-            pbar.update(len(batch))
-
-            if len(deals) < LIMIT:
-                break
-
-            offset += LIMIT
-
-            time.sleep(0.5)
-
-    return all_items
-
-
-def _parse(
-        session: requests.Session,
-        deals: list[dict]
-) -> list[dict]:
-
+    # ── Шаг 2: для каждого — детальная страница + GraphQL ─────────────────────
     items = []
+    today = str(date_cls.today())
 
-    today = str(date.today())
+    with tqdm(total=len(raw_deals), desc="  biglion",
+              unit=" концерт", leave=True, position=1) as pbar:
 
-    for d in deals:
+        for d in raw_deals:
+            do_id = d.get("id")
+            deal_url = d.get("url", "")
+            url = f"https://www.biglion.ru/deals/{deal_url}" if deal_url else ""
 
-        do_id = d.get("id")
+            locations = d.get("locations") or []
+            address = locations[0].get("friendlyAddress", "") if locations else ""
+            metro = locations[0].get("metro", "") if locations else ""
 
-        deal_url = d.get("url", "")
+            # activity_id из детальной страницы
+            activity_id = _get_activity_id(session, url)
 
-        url = (
-            f"https://www.biglion.ru/deals/{deal_url}"
-            if deal_url else ""
-        )
+            # дата/площадка из GraphQL
+            venue = ""
+            date_txt = ""
+            if do_id and activity_id:
+                events = _fetch_events(session, do_id, activity_id)
+                if events:
+                    venue = events[0].get("venue", "")
+                    address = events[0].get("address", "") or address
+                    dates = []
+                    for ev in events:
+                        ts = ev.get("date")
+                        if ts:
+                            dt = datetime.utcfromtimestamp(ts)
+                            dates.append(dt.strftime("%d.%m.%Y, %H:%M"))
+                    date_txt = "; ".join(dates)
 
-        locations = d.get("locations") or []
+            price_old = d.get("price", "")
+            price_new = d.get("priceDiscounted", "")
+            discount = d.get("discount", "")
 
-        metro = (
-            locations[0].get("metro", "")
-            if locations else ""
-        )
+            items.append({
+                "id": _make_id(url or d.get("title", "")),
+                "url": url,
+                "source": "biglion",
+                # "title": d.get("title", ""),
+                "title_short": d.get("title", ""),
+                "description": "",
+                "venue": venue,
+                "address": address,
+                "date": date_txt,
+                "age": "",
+                "price_old": f"{price_old} ₽" if price_old else "",
+                "price_new": f"{price_new} ₽" if price_new else "",
+                "discount_pct": f"{discount}%" if discount else "",
+                "promo_code": "",
+                "photo": d.get("image", ""),
+                "found_at": today,
+                "duplicate_ids": "",
+            })
 
-        activity_id = get_activity_id(
-            session=session,
-            url=url
-        )
-
-        event_data = get_event_data(
-            session=session,
-            do_id=do_id,
-            activity_id=activity_id
-        )
-
-        venue = event_data.get("venue", "")
-
-        address = (
-            event_data.get("address")
-            or (
-                locations[0].get("friendlyAddress", "")
-                if locations else ""
-            )
-        )
-
-        event_ts = event_data.get("date")
-
-        date_txt = ""
-        time_txt = ""
-
-        if event_ts:
-            dt = datetime.utcfromtimestamp(event_ts)
-
-            date_txt = dt.strftime("%d.%m.%Y")
-
-            time_txt = dt.strftime("%H:%M")
-
-        price_old = d.get("price", "")
-
-        price_new = d.get("priceDiscounted", "")
-
-        discount = d.get("discount", "")
-
-        items.append({
-            "id": _make_id(url or d.get("title", "")),
-            "url": url,
-            "source": "biglion",
-
-            #"title": "",
-
-            "title_short": d.get("title", ""),
-
-            "description": "",
-
-            "venue": venue,
-
-            "address": address,
-
-            "metro": metro,
-
-            "date": f'{date_txt}, {time_txt}',
-
-            "age": "",
-
-            "price_old": (
-                f"{price_old} ₽"
-                if price_old else ""
-            ),
-
-            "price_new": (
-                f"{price_new} ₽"
-                if price_new else ""
-            ),
-
-            "discount_pct": (
-                f"{discount}%"
-                if discount else ""
-            ),
-
-            "promo_code": "",
-
-            "photo": d.get("image", ""),
-
-            "found_at": today,
-
-            "duplicate_ids": "",
-        })
+            pbar.update(1)
+            time.sleep(0.5)
 
     return items
 
 
-def get_activity_id(
-        session: requests.Session,
-        url: str
-) -> str:
-
+def _get_activity_id(session: requests.Session, url: str) -> str:
     if not url:
         return ""
-
     try:
-
-        r = session.get(
-            url,
-            timeout=15
-        )
-
+        r = session.get(url, headers=HEADERS_HTML, timeout=15)
         r.raise_for_status()
-
-        match = re.search(
-            r'"ticketActivityExtId"\s*:\s*"(\d+)"',
-            r.text
-        )
-
-        if match:
-            return match.group(1)
-
+        m = re.search(r'"ticketActivityExtId"\s*:\s*"(\d+)"', r.text)
+        return m.group(1) if m else ""
     except Exception as e:
-        print(f"[biglion] activityId error: {e}")
+        tqdm.write(f"  [biglion] ошибка детальной {url}: {e}")
+        return ""
 
-    return ""
 
-
-def get_event_data(
-        session: requests.Session,
-        do_id: int,
-        activity_id: str
-) -> dict:
-
-    if not activity_id:
-        return {}
-
-    json_data = {
-        "query": f"""
-        mutation {{
-            fetchAndSaveEvents(
-                input: {{
-                    doId: {do_id},
-                    activityId: "{activity_id}",
-                    ticketSystemId: 2,
-                    yandexCityId: null
-                }}
-            ) {{
-                id
-                doId
-                date
-                eventExtId
-                name
-                venue
-                address
-                ticketsSystemId
-                hallId
-            }}
-        }}
-        """
-    }
-
+def _fetch_events(session: requests.Session, do_id: int, activity_id: str) -> list[dict]:
+    query = (
+        f'mutation {{ fetchAndSaveEvents(input: {{'
+        f'doId: {do_id}, activityId: "{activity_id}", '
+        f'ticketSystemId: 2, yandexCityId: null }}) '
+        f'{{ id doId date eventExtId name venue address ticketsSystemId hallId }} }}'
+    )
     try:
-
-        r = session.post(
-            GRAPHQL_URL,
-            json=json_data,
-            timeout=15
-        )
-
+        r = session.post(GRAPHQL_URL, json={"query": query}, timeout=15)
         r.raise_for_status()
-
-        data = r.json()
-
-        events = (
-            data.get("data", {})
-            .get("fetchAndSaveEvents", [])
-        )
-
-        if events:
-            return events[0]
-
+        return r.json().get("data", {}).get("fetchAndSaveEvents", [])
     except Exception as e:
-        print(f"[biglion] graphql error: {e}")
-
-    return {}
+        tqdm.write(f"  [biglion] GraphQL ошибка do_id={do_id}: {e}")
+        return []
 
 
 def _make_id(text: str) -> str:
     return hashlib.md5(text.encode()).hexdigest()[:12]
-

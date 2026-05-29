@@ -282,7 +282,7 @@ def _parse_detail(html: str, url: str, small_image: str, today: str) -> dict | N
         "id":            _make_id(url),
         "url":           url,
         "source":        "boombate",
-        #"title":         title,
+        # "title":         title,
         "title_short":   title,
         "description":   description,
         "venue":         venue,

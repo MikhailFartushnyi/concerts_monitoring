@@ -15,7 +15,7 @@ COLUMNS = {
     "id":           "ID",
     "url":          "Ссылка",
     "source":       "Источник",
-    #"title":        "Заголовок",
+    # "title":        "Заголовок",
     "title_short":  "Название",
     "description":  "Описание",
     "venue":        "Площадка",

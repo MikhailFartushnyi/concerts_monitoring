@@ -13,16 +13,23 @@ from utils.dedup import find_duplicates
 
 def main():
     t_start = time.time()
+    active  = [slug for slug, enabled in SCRAPERS.items() if enabled]
 
-    active = [slug for slug, enabled in SCRAPERS.items() if enabled]
-
-    # ── 1. Сбор данных ────────────────────────────────────────────────────────
     all_fresh: list[dict] = []
     stats: dict[str, int] = {}
 
-    print("🎼  Мониторинг концертов классической музыки\n")
+    # position=0 — шкала сайтов всегда снизу
+    # скраперы рисуют свою шкалу на position=1 (над этой)
+    sites_bar = tqdm(
+        active,
+        desc="Сайты",
+        unit=" сайт",
+        position=0,
+        leave=True,
+    )
 
-    for slug in tqdm(active, desc="Сайты", unit=" сайт", position=0):
+    for slug in sites_bar:
+        sites_bar.set_postfix_str(slug)
         module = SCRAPER_MAP.get(slug)
         if not module:
             tqdm.write(f"[!] Скрапер '{slug}' не найден, пропускаем")
@@ -31,44 +38,43 @@ def main():
             items = module.run()
             all_fresh.extend(items)
             stats[slug] = len(items)
+            tqdm.write(f"  ✓ {slug}: {len(items)} концертов")
         except Exception as e:
-            tqdm.write(f"[!] Ошибка '{slug}': {e}")
+            tqdm.write(f"  [!] Ошибка '{slug}': {e}")
             stats[slug] = 0
 
-    # ── Итог по сайтам ────────────────────────────────────────────────────────
-    print(f"\n{'─'*40}")
+    sites_bar.close()
+
+    # ── Итог ──────────────────────────────────────────────────────────────────
+    tqdm.write(f"\n{'─'*40}")
     for slug, count in stats.items():
-        print(f"  {slug:<20} {count:>6} концертов")
-    print(f"{'─'*40}")
-    print(f"  {'ИТОГО':<20} {len(all_fresh):>6}")
+        tqdm.write(f"  {slug:<20} {count:>6} концертов")
+    tqdm.write(f"{'─'*40}")
+    tqdm.write(f"  {'ИТОГО':<20} {len(all_fresh):>6}")
 
     if not all_fresh:
-        print("\nНет данных. Завершение.")
+        tqdm.write("\nНет данных. Завершение.")
         return
 
-    # ── 2. Только новые ───────────────────────────────────────────────────────
+    # ── Только новые ──────────────────────────────────────────────────────────
     existing_ids = load_existing_ids()
     new_records  = [r for r in all_fresh if r["id"] not in existing_ids]
-    print(f"\nУже в xlsx: {len(existing_ids)}  |  Новых: {len(new_records)}")
+    tqdm.write(f"\nУже в xlsx: {len(existing_ids)}  |  Новых: {len(new_records)}")
 
     if not new_records:
-        print("✅  Новых концертов нет. Файл не изменён.")
-        _elapsed(t_start)
+        tqdm.write("✅  Новых концертов нет. Файл не изменён.")
+        tqdm.write(f"⏱  {time.time() - t_start:.1f} с")
         return
 
-    # ── 3. Дубли между сайтами ────────────────────────────────────────────────
+    # ── Дубли ─────────────────────────────────────────────────────────────────
     find_duplicates(new_records)
     dupes = sum(1 for r in new_records if r.get("duplicate_ids"))
-    print(f"Дублей на разных сайтах: {dupes} (жёлтый в xlsx)")
+    tqdm.write(f"Дублей на разных сайтах: {dupes} (жёлтый в xlsx)")
 
-    # ── 4. Сохранение ─────────────────────────────────────────────────────────
+    # ── Сохранение ────────────────────────────────────────────────────────────
     saved = save_new_records(new_records)
-    print(f"\n✅  Добавлено {saved} строк → concerts.xlsx")
-    _elapsed(t_start)
-
-
-def _elapsed(t: float):
-    print(f"⏱  {time.time() - t:.1f} с")
+    tqdm.write(f"\n✅  Добавлено {saved} строк → concerts.xlsx")
+    tqdm.write(f"⏱  {time.time() - t_start:.1f} с")
 
 
 if __name__ == "__main__":
