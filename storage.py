@@ -44,11 +44,13 @@ def save_new_records(new_records: list[dict]) -> int:
 
     if os.path.exists(OUTPUT_FILE):
         df_exist = pd.read_excel(OUTPUT_FILE, dtype=str)
-        existing_rows = len(df_exist)
-        df_all = pd.concat([df_exist, df_new], ignore_index=True)
+
+        # Новые записи сверху
+        df_all = pd.concat([df_new, df_exist], ignore_index=True)
     else:
-        existing_rows = 0
         df_all = df_new
+
+    existing_rows = 0
 
     df_all.to_excel(OUTPUT_FILE, index=False, engine="openpyxl")
     _apply_styles(existing_rows, len(df_new))
