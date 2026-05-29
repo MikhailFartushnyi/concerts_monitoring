@@ -4,12 +4,23 @@
 
 import time
 from tqdm import tqdm
-
+import traceback
 from config import SCRAPERS
 from scrapers import SCRAPER_MAP
 from storage import load_existing_ids, save_new_records
 from utils.dedup import find_duplicates
 
+
+def main_wrapper():
+    try:
+        # Запускаем основную функцию
+        main()
+        input(f'Работа завершена. Нажмите Enter для выхода!')
+    except Exception as e:
+        tqdm.write("❌ Произошла ошибка во время выполнения main():")
+        # Полный traceback ошибки
+        tqdm.write(traceback.format_exc())
+        input("Сделайте скриншот ошибки и отправьте разработчику. Нажмите Enter, чтобы завершить...")
 
 def main():
     t_start = time.time()
@@ -78,4 +89,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main_wrapper()
