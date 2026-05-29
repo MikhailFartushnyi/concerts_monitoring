@@ -1,22 +1,15 @@
-# Virtual env
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
 venv/
 .venv/
 
-# PyCharm
+# Данные (xlsx не коммитим — у каждого своя локальная база)
+# scrapers/
+
+# IDE
 .idea/
-
-# Python cache
-__pycache__/
-*.pyc
-
-# Env files
-.env
-
-# Logs
-*.log
-
-# SQLite
-*.sqlite3
-
-# macOS
-.DS_Store
+.vscode/
+*.iml
